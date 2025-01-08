@@ -1,0 +1,7 @@
+---
+- name: Install Kubernetes cluster on LXC
+  gather_facts: true
+  hosts: base_install
+  roles:
+    - {role: bootstrap}
+    - {role: kubeadm-init-join}

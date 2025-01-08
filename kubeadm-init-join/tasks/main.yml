@@ -1,0 +1,61 @@
+---
+- name: Template kubeadm config
+  ansible.builtin.template:
+    src: templates/kubeadm-config.yml.j2
+    dest: /root/kubeadm-config.yml
+    mode: '0440'
+  when: inventory_hostname in groups["k8s-main"]
+
+- name: Kubeadm pull images
+  args:
+    creates: pullImages.txt
+  shell: |
+    kubeadm config images pull
+  when: inventory_hostname in groups["k8s-main"]
+
+- name: Kubeadm Init
+  args:
+    creates: kubeadmInit.txt
+  shell: |
+    kubeadm init --config kubeadm-config.yml --ignore-preflight-errors=all
+  when: inventory_hostname in groups["k8s-main"]
+# delegate_to: "{{ groups['k8s-main'][0] }}"
+
+- name: Generate Kubeadm join token
+  args:
+    creates: jointToken.txt
+  shell: |
+    kubeadm token create --print-join-command
+  register: kubeadm_join_cmd
+  delegate_to: "{{ groups['k8s-main'][0] }}"
+
+- set_fact:
+    kubeadm_join: "{{ kubeadm_join_cmd.stdout }}"
+  when: inventory_hostname in groups["base_install"]
+
+- debug: var=kubeadm_join
+
+- name: Copying kube admin config
+  args:
+    creates: kubeconfig.txt
+  shell: |
+    mkdir -p /root/.kube && cp /etc/kubernetes/admin.conf /root/.kube/config
+  when: inventory_hostname in groups["k8s-main"]
+
+- name: Install Calico CNI (1/2)
+  args:
+    creates: calico.txt
+  shell: "kubectl create -f https://raw.githubusercontent.com/projectcalico/calico/v{{ calico_version }}/manifests/tigera-operator.yaml"
+  when: inventory_hostname in groups["k8s-main"]
+
+- name: Install Calico CNI (2/2)
+  args:
+    creates: calico2.txt
+  shell: "kubectl create -f https://raw.githubusercontent.com/projectcalico/calico/v{{ calico_version }}/manifests/custom-resources.yaml"
+  when: inventory_hostname in groups["k8s-main"]
+
+- name: Run kubeadm join
+  args:
+    creates: nodeJoint.txt
+  shell: "{{ kubeadm_join }} --ignore-preflight-errors=all"
+  when: inventory_hostname in groups["k8s-nodes"]

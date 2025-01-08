@@ -1,0 +1,122 @@
+---
+- name: Disable SWAP since kubernetes can't work with swap enabled (1/2)
+  shell: |
+    swapoff -a
+
+- name: Install containerd official binary
+  ansible.builtin.unarchive:
+    src: "https://github.com/containerd/containerd/releases/download/v{{ containerd_version }}/containerd-{{ containerd_version }}-linux-amd64.tar.gz"
+    dest: "/usr/local"
+    remote_src: yes
+    creates: "/usr/local/bin/containerd"
+
+- name: Create a systemd directory
+  ansible.builtin.file:
+    path: "/usr/local/lib/systemd/system"
+    state: directory
+    mode: '0755'
+
+- name: Download containerd.service file for systemd
+  ansible.builtin.get_url:
+    url: "https://raw.githubusercontent.com/containerd/containerd/main/containerd.service"
+    dest: "/usr/local/lib/systemd/system/containerd.service"
+    mode: '0440'
+
+- name: Just force systemd to reread configs (2.4 and above)
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+
+- name: Make sure containerd service unit is running
+  ansible.builtin.systemd_service:
+    state: started
+    name: containerd
+
+- name: Download runc binary
+  ansible.builtin.get_url:
+    url: "https://github.com/opencontainers/runc/releases/download/v{{ runc_version }}/runc.amd64"
+    dest: "/tmp/runc.amd64"
+    mode: '0755'
+
+- name: Install runc binary
+  args:
+    creates: runcBin.txt
+  shell: |
+    install -m 755 /tmp/runc.amd64 /usr/local/sbin/runc
+
+- name: Create a CNI directory
+  ansible.builtin.file:
+    path: "/opt/cni/bin"
+    state: directory
+    mode: '0755'
+
+- name: Install CNI plugins
+  ansible.builtin.unarchive:
+    src: "https://github.com/containernetworking/plugins/releases/download/v{{ cni_plugins_version }}/cni-plugins-linux-amd64-v{{ cni_plugins_version }}.tgz"
+    dest: "/opt/cni/bin"
+    remote_src: yes
+    creates: "/opt/cni/bin/macvlan"
+
+- name: Create a containerd directory
+  ansible.builtin.file:
+    path: "/etc/containerd"
+    state: directory
+    mode: '0755'
+
+- name: Template containerd config
+  ansible.builtin.template:
+    src: templates/config.toml.j2
+    dest: /etc/containerd/config.toml
+    mode: '0440'
+
+- name: Just force systemd to reread configs
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+
+- name: Install packages needed to use the Kubernetes apt repository
+  ansible.builtin.apt:
+    update_cache: yes
+    name:
+      - apt-transport-https 
+      - ca-certificates 
+      - curl 
+      - gpg
+
+- name: Check if the kubernetes signing key file exists
+  stat:
+    path: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+  register: k8s_gpg_key_check
+
+- name: Download the public signing key for the Kubernetes package repositories
+  shell: "curl -fsSL https://pkgs.k8s.io/core:/stable:/v{{ kubernetes_version }}/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg"
+  when: not k8s_gpg_key_check.stat.exists
+
+- name: Add repository for kubernetes 1.32 to Apt sources
+  ansible.builtin.lineinfile:
+    path: /etc/apt/sources.list.d/kubernetes.list
+    line: "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v{{ kubernetes_version }}/deb/ /"
+    state: present
+    create: yes
+
+- name: Install required packages
+  ansible.builtin.apt:
+    update_cache: yes
+    name:
+      - kubelet 
+      - kubectl
+      - kubeadm 
+
+- name: Hold required packages
+  args:
+    creates: aptMarlHold.txt
+  shell: |
+    apt-mark hold kubelet kubectl kubeadm
+
+- name: Enable kubelet service before running kubeadm
+  ansible.builtin.systemd_service:
+    name: kubelet
+    enabled: true
+
+- name: Enable containerd service
+  ansible.builtin.systemd_service:
+    name: containerd
+    enabled: true
